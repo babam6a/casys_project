@@ -8,6 +8,8 @@
 #include <sys/mman.h>
 #include <sys/auxv.h>
 #include <unistd.h>
+#include <signal.h>
+#include <fcntl.h>
 
 #define BITMASK(SHIFT, CNT) (((1ul << (CNT)) - 1) << (SHIFT))
 #define ROUND_UP(X, STEP) (((X) + (STEP) - 1) / (STEP) * (STEP))
@@ -18,6 +20,16 @@
 #define PGSIZE  (1 << PGBITS)              /* Bytes in a page. */
 #define PGMASK  BITMASK(PGSHIFT, PGBITS)   /* Page offset bits (0:12). */
 #define pg_ofs(va) ((uint64_t) (va) & PGMASK)
+
+/* global variables */
+char *file_name;
+FILE *file;
+Elf64_Ehdr ehdr;
+Elf64_Phdr *phdrs;
+uint64_t load_phdr_num = 0;
+struct sigaction act;
+struct sigaction act_prev;
+int map_req = 1;
 
 void print_mapping_info(uint64_t base_addr, uint64_t ofs, uint64_t size) {
 	char message[1024];
@@ -73,7 +85,7 @@ static bool validate_segment (const Elf64_Phdr* phdr, FILE* file) {
 	return true;
 }
 
-void *load_segment (FILE *file, uint64_t section_ofs, uint64_t code_size, Elf64_Phdr *phdrs, int load_phdr_num) {
+void *load_segment (FILE *file, uint64_t section_ofs, uint64_t code_size) {
 	int map_flag = MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS;
 	int protect_flag = PROT_READ | PROT_WRITE;
 
@@ -126,7 +138,7 @@ bool check_elf(Elf64_Ehdr *ehdr) {
 	return true;
 }
 
-Elf64_Phdr *load_phdr(FILE *file, Elf64_Ehdr *ehdr, uint64_t *load_phdr_num) {
+Elf64_Phdr *load_phdr(FILE *file, Elf64_Ehdr *ehdr) {
 	int64_t file_ofs = ehdr-> e_phoff;
 
 	Elf64_Phdr *phdrs = (Elf64_Phdr *)calloc(sizeof(Elf64_Phdr), ehdr-> e_phnum);
@@ -134,8 +146,6 @@ Elf64_Phdr *load_phdr(FILE *file, Elf64_Ehdr *ehdr, uint64_t *load_phdr_num) {
 		printf("phdr calloc error\n");
 		return NULL;
 	}
-
-	*load_phdr_num = 0;
 
 	for (int i = 0; i < ehdr-> e_phnum; i++) {
 		Elf64_Phdr phdr = phdrs[i];
@@ -152,8 +162,8 @@ Elf64_Phdr *load_phdr(FILE *file, Elf64_Ehdr *ehdr, uint64_t *load_phdr_num) {
 		switch (phdr.p_type) {
 			case PT_LOAD:
 				if (validate_segment (&phdr, file)) {
-					phdrs[*load_phdr_num] = phdr;
-					*load_phdr_num = *load_phdr_num + 1;
+					phdrs[load_phdr_num] = phdr;
+					load_phdr_num += 1;
 				}
 				else {
 					printf("valid segment error\n");
@@ -233,7 +243,7 @@ void *setup_stack(int argc, char **argv, char **envp, Elf64_Ehdr *ehdr, void *kp
 	}
 
 	/* copy argv */
-	for (int i = argv_num - 1; i >= 1; i--) {
+	for (int i = argv_num - 1; i >= 2; i--) {
 		int len = strlen(argv[i]);
 		stack_pointer -= (len + 1); // consider '\0'
 		memcpy((void *)stack_pointer, argv[i], len + 1);
@@ -242,18 +252,18 @@ void *setup_stack(int argc, char **argv, char **envp, Elf64_Ehdr *ehdr, void *kp
 	/* Unspecified */
 	stack_pointer = stack_pointer & (~(uint64_t)15);
 	stack_pointer -= 8 * 38; // Auxiliary vector
-	stack_pointer -= ((envp_num + 1) * 8 + (argv_num + 1) * 8); //argv & envp
+	stack_pointer -= ((envp_num + 1) * 8 + (argv_num) * 8); //argv & envp
 	stack_pointer -= 8; // argc
 	stack_pointer = stack_pointer & (~15); // align
 
 	void *rsp = (void *)stack_pointer;
 
 	/* argc */
-	*(uint64_t *)stack_pointer = (uint64_t)(argc - 1);
+	*(uint64_t *)stack_pointer = (uint64_t)(argc - 2);
 	stack_pointer += 8;
 
 	/* copy argv pointers */
-	for (int i = 1; i < argv_num; i++) {
+	for (int i = 2; i < argv_num; i++) {
 		memcpy((void *)stack_pointer, &argv[i], 8);
 		stack_pointer += 8;
 	}
@@ -313,14 +323,109 @@ bool check_itself(char *exec_name, char *file_name) {
 	return true;
 }
 
-int main(int argc, char** argv, char **envp) {
-	char* file_name;
-	FILE *file;
-	Elf64_Ehdr ehdr;
-	Elf64_Phdr *phdrs;
-	
-    file_name = argv[1];
+bool map_page(int fd, uint64_t segfault_addr, Elf64_Phdr *target_segment, uint64_t bss_start, uint64_t bss_end) {
+    int map_flag = MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS;
+	int protect_flag = PROT_READ | PROT_WRITE;
+    uint64_t segfault_start = segfault_addr & (~PGMASK);
+    uint64_t segfault_end = segfault_start + PGSIZE;
+    uint64_t size = PGSIZE;
+    uint64_t read_size = 0;
+    uint64_t read_start = segfault_start;
 
+    if (segfault_start < bss_start) {
+        size -= (bss_start - segfault_start);
+        read_size += (bss_start - segfault_start);
+    }
+    if (bss_end < segfault_end) {
+        size -= (segfault_end - bss_end);
+    }
+
+    /* mmap page */
+    void *segfault_mmap = (void *)mmap((void *)segfault_start, PGSIZE, protect_flag, map_flag, -1, 0);
+    if (segfault_mmap == MAP_FAILED) {
+        write(STDERR_FILENO, "mmap error in bss\n", 19);
+        return false;
+    }
+
+    print_mapping_info((uint64_t)segfault_mmap, 0, PGSIZE);
+
+    uint64_t read_ofs = read_start - (target_segment-> p_vaddr - target_segment-> p_offset);
+
+    lseek(fd, read_ofs, SEEK_SET);
+
+    if (read(fd, (void *)read_start, read_size) != read_size) {
+        write(STDOUT_FILENO, "write error in bss\n", 20);
+        return false;
+    }
+
+    memset((void *)(read_start + read_size), 0, size);
+
+    int flags = set_flags(target_segment-> p_flags);
+
+    if (mprotect(segfault_mmap, PGSIZE, flags) == -1) {
+        write(STDERR_FILENO, "mprotect error in bss\n", 23);
+        munmap(segfault_mmap, PGSIZE);
+       return false;
+    }
+    return true;
+}
+
+uint64_t predict(uint64_t segfault_addr, uint64_t bss_start, uint64_t bss_end) {
+    return segfault_addr + PGSIZE;
+}
+
+void page_fault(int sig, siginfo_t *info, void *context) {
+    /* Different from dpager, segfault occurs only when 
+    1) accessing the bss section
+    2) real segmentation fault */
+    if (sig != SIGSEGV)
+        goto error;
+
+    uint64_t segfault_addr = (uint64_t)info-> si_addr;
+    Elf64_Phdr target_segment = phdrs[load_phdr_num - 1];
+    uint64_t bss_start = target_segment.p_vaddr + target_segment.p_filesz;
+    uint64_t bss_end = target_segment.p_vaddr + target_segment.p_memsz;
+
+    if ((segfault_addr < bss_start) || (bss_end < segfault_addr)) {
+        /* this is real segmentation fault */
+        write(STDOUT_FILENO, "This is real seg_fault\n", 24);
+        goto segfault;
+    }
+
+    int fd = open(file_name, O_RDONLY);
+
+    /* hpager : we should map multiple pages */
+    for (int i = 0; i < map_req; i++) {
+        if ((segfault_addr < bss_start) || (bss_end < segfault_addr))
+            break;
+
+        bool result = map_page(fd, segfault_addr, &target_segment, bss_start, bss_end);
+        if (!result)
+            goto after_open_error;
+
+        segfault_addr = predict(segfault_addr, bss_start, bss_end);
+    }
+
+    goto finish;
+
+after_open_error :
+    close(fd);
+error :
+    exit(0);
+segfault :
+    (*act_prev.sa_handler)(sig);
+finish :
+    return;
+}
+
+int main(int argc, char** argv, char **envp) {
+    map_req = atoi(argv[1]);
+    if (map_req < 2) { // mapping page number should be greater than 1
+        printf("Usage: <loader> <map_req> <target program> ... \n");
+        goto error;
+    }
+
+    file_name = argv[2];
     if (file_name == NULL) {
         printf("should have file name or path\n");
         goto error;
@@ -345,18 +450,18 @@ int main(int argc, char** argv, char **envp) {
     }
 
     /* read and save phdrs */
-    uint64_t load_phdr_num = 0;
-    phdrs = load_phdr(file, &ehdr, &load_phdr_num);
+    phdrs = load_phdr(file, &ehdr);
     if (phdrs == NULL) {
         printf("load_phdr error\n");
         goto file_error;
     }
 
-    uint64_t code_size = phdrs[load_phdr_num - 1].p_vaddr + phdrs[load_phdr_num - 1].p_memsz - (phdrs[0].p_vaddr & ~PGSIZE);
+    /* only load code space */
+    uint64_t code_size = phdrs[load_phdr_num - 1].p_vaddr + phdrs[load_phdr_num - 1].p_filesz - (phdrs[0].p_vaddr & ~PGSIZE);
 
     /* load segments */
     uint64_t section_ofs = ehdr.e_phoff + (ehdr.e_phentsize * ehdr.e_phnum);
-    void *kpage = load_segment(file, section_ofs, code_size, phdrs, load_phdr_num);
+    void *kpage = load_segment(file, section_ofs, code_size);
     if (kpage == NULL) {
         printf("load_segment error\n");
         goto load_error;
@@ -368,6 +473,12 @@ int main(int argc, char** argv, char **envp) {
         printf("setup_stack failed\n");
         goto file_error;
     }
+
+    /* signal handler setting */
+    act.sa_flags = SA_SIGINFO | SA_RESTART;
+    act.sa_sigaction = page_fault;
+    sigemptyset(&act.sa_mask);
+    sigaction(SIGSEGV, &act, &act_prev);
 
     fclose(file);
     /* Start new thread */
@@ -395,6 +506,9 @@ int main(int argc, char** argv, char **envp) {
         "jmp %1"
         : : "a" (rsp),"b" (ehdr.e_entry) :
     );
+
+    // you should never reach here
+    while (1) {}
 
 load_error:
 	free(phdrs);

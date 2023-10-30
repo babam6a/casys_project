@@ -242,9 +242,7 @@ void *setup_stack(int argc, char **argv, char **envp, Elf64_Ehdr *ehdr, void *kp
 	}
 
 	/* copy argv */
-	for (int i = argv_num - 1; i >= 0; i--) {
-		if (i == 1)
-			continue;
+	for (int i = argv_num - 1; i >= 1; i--) {
 		int len = strlen(argv[i]);
 		stack_pointer -= (len + 1); // consider '\0'
 		memcpy((void *)stack_pointer, argv[i], len + 1);
@@ -264,9 +262,7 @@ void *setup_stack(int argc, char **argv, char **envp, Elf64_Ehdr *ehdr, void *kp
 	stack_pointer += 8;
 
 	/* copy argv pointers */
-	for (int i = 0; i < argv_num; i++) {
-		if (i == 1)
-			continue;
+	for (int i = 1; i < argv_num; i++) {
 		memcpy((void *)stack_pointer, &argv[i], 8);
 		stack_pointer += 8;
 	}
