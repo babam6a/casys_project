@@ -108,6 +108,10 @@ void *load_segment (FILE *file, uint64_t section_ofs, uint64_t code_size, Elf64_
 			goto error;
 		}
 	}
+
+	// set bss
+	memset((void *)(phdrs[load_phdr_num - 1].p_vaddr + phdrs[load_phdr_num - 1].p_filesz), 0, phdrs[load_phdr_num - 1].p_memsz - phdrs[load_phdr_num - 1].p_filesz);
+
 	return kpage;
 
 error:
@@ -352,7 +356,7 @@ int main(int argc, char** argv, char **envp) {
         goto file_error;
     }
 
-    uint64_t code_size = phdrs[load_phdr_num - 1].p_vaddr + phdrs[load_phdr_num - 1].p_memsz - (phdrs[0].p_vaddr & ~PGSIZE);
+    uint64_t code_size = phdrs[load_phdr_num - 1].p_vaddr + phdrs[load_phdr_num - 1].p_memsz - (phdrs[0].p_vaddr & ~PGMASK);
 
     /* load segments */
     uint64_t section_ofs = ehdr.e_phoff + (ehdr.e_phentsize * ehdr.e_phnum);
