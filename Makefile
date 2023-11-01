@@ -1,21 +1,17 @@
-SRC := $(wildcard ./test/*.c)
+SRC = $(wildcard *.c)
+TEST_SRC = $(filter-out test/utils.c, $(wildcard test/*.c))
 
-all : apager dpager hpager apager_back_to_back
+all : loader tests
 
-apager : apager.c
-	gcc -o apager apager.c
-
-dpager : dpager.c
-	gcc -o dpager dpager.c
-
-hpager : hpager.c
-	gcc -o hpager hpager.c
-
-apager_back_to_back : apager_back_to_back.c
-	gcc -o apager_back_to_back apager_back_to_back.c
-
-test : $(SRC)
-	gcc --static -o $@ $^
+loader : $(SRC)
+	for i in $(SRC); do \
+		gcc -o $$(basename $$i .c) $$i; \
+	done
+	
+tests : $(TEST_SRC)
+	for i in $(TEST_SRC); do \
+		gcc --static -include ./test/utils.c -o $$(basename $$i .c) $$i; \
+	done
 
 clean :
-	rm apager dpager hpager apager_back_to_back
+	rm $(basename $(SRC) .c) $(basename $(TEST_SRC) .c)

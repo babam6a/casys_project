@@ -1,5 +1,3 @@
-#define _GNU_SOURCE
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -7,13 +5,6 @@
 
 int size = 100000 * (1<<12);
 char page[100000 * (1<<12)];
-
-double get_spent_time(struct timespec start, struct timespec end) {
-    double sec = (end.tv_sec - start.tv_sec) * 1000000000;
-    double ns = end.tv_nsec - start.tv_nsec;
-
-    return sec + ns;
-}
 
 int main(void) {
     struct rusage usage_start, usage_end;
