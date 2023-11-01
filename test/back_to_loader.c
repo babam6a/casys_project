@@ -1,12 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
-#include <signal.h>
 #include "utils.h"
-
-void return_to_loader() {
-    kill(getpid(), SIGUSR1);
-}
 
 int main(int argc, char **argv) {
     struct rusage usage_start, usage_end;

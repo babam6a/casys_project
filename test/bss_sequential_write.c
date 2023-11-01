@@ -31,4 +31,5 @@ int main(void) {
         exit(-1);
     }
     print_mem_status(&usage_start, &usage_end);
+    return_to_loader();
 }

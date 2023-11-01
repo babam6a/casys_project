@@ -1,7 +1,13 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
+#include <unistd.h>
 #include <sys/time.h>
 #include "utils.h"
+
+void return_to_loader() {
+    kill(getpid(), SIGUSR1);
+}
 
 void print_mem_status(struct rusage *usage_start, struct rusage *usage_end) {
         long utime_s, utime_us, stime_s, stime_us, ttime_s, ttime_us;

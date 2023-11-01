@@ -413,6 +413,7 @@ after_open_error :
 error :
     exit(0);
 segfault :
+	write(STDERR_FILENO, "This is real segmentation fault!\n", 34);
     (*act_prev.sa_handler)(sig);
 finish :
     return;
