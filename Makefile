@@ -10,7 +10,7 @@ loader : $(SRC)
 	
 tests : $(TEST_SRC)
 	for i in $(TEST_SRC); do \
-		gcc --static -include ./test/utils.c -o $$(basename $$i .c) $$i; \
+		gcc --static -include ./test/utils.c -o ./test/$$(basename $$i .c) $$i; \
 	done
 
 clean :
