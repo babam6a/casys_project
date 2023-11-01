@@ -420,8 +420,11 @@ finish :
 
 int main(int argc, char** argv, char **envp) {
     map_req = atoi(argv[1]);
+
+	/* In hpager, we should decide how many pages we will load at once */
     if (map_req < 2) { // mapping page number should be greater than 1
-        printf("Usage: <loader> <map_req> <target program> ... \n");
+        printf("Usage: <loader> <map_req> <target program> <args> \n");
+		printf("ex) ./hpager 2 ./test/memory_error\n");
         goto error;
     }
 
